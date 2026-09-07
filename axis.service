@@ -1,0 +1,28 @@
+[Unit]
+Description=Local web GUI and motion upload receiver for old AXIS cameras
+Documentation=https://github.com/OWNER/REPO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=axis
+Group=axis
+WorkingDirectory=/opt/axis
+EnvironmentFile=/etc/axis.env
+ExecStart=/usr/bin/python3 /opt/axis/axis.py
+Restart=always
+RestartSec=5
+
+# The camera credentials live in /opt/axis/.axis-creds, readable only by this user.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/srv/axis-uploads
+
+[Install]
+WantedBy=multi-user.target
