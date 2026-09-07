@@ -128,8 +128,18 @@ sudo sysctl -w net.inet.tcp.rfc1323=0
 iptables -t mangle -A OUTPUT -d <camera-ip> -p tcp --syn -j TCPOPTSTRIP --strip-options timestamp
 ```
 
-**The image format parameter is `jpg`, not `jpeg`.** The camera accepts `jpeg` without
-complaint and then never uploads anything.
+**The event file format has exactly two working values, `jpg` and `mp4`.** The parameter is
+typed as a free string in the camera's own schema, so it accepts anything, and any other
+value silently disables uploading. `jpeg` fails this way, and so does `mjpeg`, even though
+the camera lists MJPEG among its image formats. The event still runs and the camera's log
+shows the task starting; nothing is produced and nothing is reported.
+
+**Event settings can need the event toggled off and on to take effect.** Writing an event
+parameter updates the configuration file, but the camera's task scheduler does not always
+reload it. When it does not, recording keeps running with the previous settings and no
+uploads arrive. Writing `root.Event.E0.Enabled` forces the reload, so saving from the Upload
+section is always safe; changing event parameters in the raw parameter editor is not, and
+should be followed by toggling the event off and on.
 
 **Uploads are not multipart.** The camera posts the raw image as the request body with
 `Content-Type: image/jpeg` and the filename in `Content-Disposition`. A receiver that only
