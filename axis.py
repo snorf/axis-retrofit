@@ -520,11 +520,11 @@ HTML = r"""<!doctype html>
   </div>
   <fieldset id="panel">
    <legend>Selected window: <span id="selname">–</span></legend>
-   <label><span>Name</span><input id="Name" pattern="[A-Za-z0-9 _-]+" size="18"></label>
-   <label><span>Type</span><select id="WindowType"><option value="include">Include</option><option value="exclude">Exclude</option></select></label>
-   <label><span>Object size</span><input type="range" id="ObjectSize" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
-   <label><span>History</span><input type="range" id="History" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
-   <label><span>Sensitivity</span><input type="range" id="Sensitivity" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
+   <label><span>Name</span><input autocomplete="off" id="Name" pattern="[A-Za-z0-9 _-]+" size="18"></label>
+   <label><span>Type</span><select autocomplete="off" id="WindowType"><option value="include">Include</option><option value="exclude">Exclude</option></select></label>
+   <label><span>Object size</span><input autocomplete="off" type="range" id="ObjectSize" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
+   <label><span>History</span><input autocomplete="off" type="range" id="History" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
+   <label><span>Sensitivity</span><input autocomplete="off" type="range" id="Sensitivity" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
    <small>Recommended: object size 5–15, history 60–90, sensitivity 75–95. If the level stays above the threshold with an empty room, the camera is triggering on noise.</small><br>
    <button id="save">Save</button><button id="neu">New window</button><button id="del">Delete</button><button id="reload">Reload</button>
   </fieldset>
@@ -534,12 +534,12 @@ HTML = r"""<!doctype html>
 <section id="sec-upload" hidden>
  <h2>HTTP upload on motion</h2>
  <fieldset>
-  <label><span>URL</span><input id="url" size="40" value="__UPLOAD_URL__"></label>
-  <label><span>Format</span><select id="fileformat"><option value="jpg">JPEG images</option><option value="mp4">MP4 clips</option></select></label>
-  <label><span>Pre-trigger</span><input id="pre" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
-  <label><span>Post-trigger</span><input id="post" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
-  <label><span>Min interval (s)</span><input id="min_interval" type="number" min="0"></label>
-  <label><span>Enabled</span><input id="enabled" type="checkbox"></label>
+  <label><span>URL</span><input autocomplete="off" id="url" size="40" value="__UPLOAD_URL__"></label>
+  <label><span>Format</span><select autocomplete="off" id="fileformat"><option value="jpg">JPEG images</option><option value="mp4">MP4 clips</option></select></label>
+  <label><span>Pre-trigger</span><input autocomplete="off" id="pre" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
+  <label><span>Post-trigger</span><input autocomplete="off" id="post" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
+  <label><span>Min interval (s)</span><input autocomplete="off" id="min_interval" type="number" min="0"></label>
+  <label><span>Enabled</span><input autocomplete="off" id="enabled" type="checkbox"></label>
   <div id="target"></div>
   <button id="test">Test connection</button><button id="savet">Save</button><button id="trig">Trigger event now</button>
  </fieldset>
@@ -704,7 +704,7 @@ function fillTarget(){
   $('min_interval').value=(e.MinimumTriggerInterval||'0').split(':').reduce((a,b)=>a*60+ +b,0);
   $('enabled').checked=e.Enabled==='yes';
   $('target').textContent=act
-    ?'Camera: upload action '+act[0]+' -> server '+act[1].Server+(srv?' ('+st.servers[srv].Address+')':'')+', event '+(e.Enabled==='yes'?'enabled':'disabled')+', trigger '+e.SWInput
+    ?'Camera: upload action '+act[0]+' -> server '+act[1].Server+(srv?' ('+st.servers[srv].Address+')':'')+', format '+e.FileFormat+', event '+(e.Enabled==='yes'?'enabled':'disabled')+', trigger '+e.SWInput
     :'The camera has no HTTP upload action yet. Save to create the server and action.';
 }
 const target=()=>({url:$('url').value,fileformat:$('fileformat').value,pre:+$('pre').value,post:+$('post').value,min_interval:+$('min_interval').value,enabled:$('enabled').checked});
