@@ -90,6 +90,11 @@ run it in a container with a bridged or NAT network instead, publish the port an
 `ADVERTISE_HOST` to the host's LAN address, otherwise the upload URL offered in the interface
 will be an address the camera cannot reach.
 
+Put `UPLOAD_DIR` on its own volume rather than the root filesystem. Images are small, around
+19 KB each and six per event, so ordinary use is well under a megabyte a day. A camera that
+is triggering on sensor noise instead writes about 150 MB a day, which fills a small root
+filesystem quickly. There is no retention policy yet: nothing deletes old images.
+
 ### Setting up motion upload
 
 Open the **Upload** section. The URL field is pre-filled with the address the camera can
