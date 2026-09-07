@@ -24,7 +24,9 @@ endpoints directly instead, so everything works in a normal browser again.
   hardcoded, so it adapts to whatever model it is pointed at.
 - **Maintenance.** System log, server report, configuration backup, restart, factory reset.
 - **Test trigger.** Fire a motion event from the GUI using the camera's virtual web-button
-  input, so you can test the whole chain without walking to the camera.
+  input, so you can test the whole chain without walking to the camera. It holds the input
+  high for six seconds, because a shorter pulse yields pre-trigger frames but no post-trigger
+  ones, and an instantaneous one is missed entirely.
 
 ## Requirements
 
@@ -163,7 +165,10 @@ Deliberately left out, and good places to contribute:
   and makes the camera unreachable.
 - Adding and removing camera users (`pwdgrp.cgi`).
 - Audio transmit and receive.
-- The interface strings are in Swedish. There is no translation layer yet.
+- Multiple cameras. One instance talks to one camera, set by `AXIS_HOST`. Running several
+  instances on different ports works today; a single instance with a camera picker does not.
+- Translations. The interface is English only, with no i18n layer. One would be welcome if
+  anyone actually needs it.
 
 ## License
 

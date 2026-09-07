@@ -19,6 +19,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
 
@@ -51,13 +52,13 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # Left-hand menu. Every parameter group the camera exposes belongs to exactly one section;
 # adding a section is one line here and nothing else.
 SECTIONS = [
-    ("image", "Bild", ["Image", "ImageSource"]),
-    ("network", "Nätverk", ["Network", "SOCKS", "HTTPS", "SNMP", "Bandwidth"]),
-    ("time", "Tid", ["Time"]),
-    ("audio", "Ljud", ["Audio", "AudioSource"]),
-    ("notify", "Notifiering", ["Notify", "SMTP", "MailLogd"]),
+    ("image", "Image", ["Image", "ImageSource"]),
+    ("network", "Network", ["Network", "SOCKS", "HTTPS", "SNMP", "Bandwidth"]),
+    ("time", "Time", ["Time"]),
+    ("audio", "Audio", ["Audio", "AudioSource"]),
+    ("notify", "Notifications", ["Notify", "SMTP", "MailLogd"]),
     ("layout", "Live View", ["Layout"]),
-    ("events", "Händelser (rå)", ["Event", "EventServers", "Motion"]),
+    ("events", "Events (raw)", ["Event", "EventServers", "Motion"]),
     ("system", "System", ["System", "Log", "StatusLED", "Input", "Output",
                           "Brand", "Properties"]),
 ]
@@ -94,7 +95,7 @@ class Camera:
         if r.status_code != 200:
             if stream:
                 r.close()
-            raise CameraError(f"{path} svarade HTTP {r.status_code}")
+            raise CameraError(f"{path} returned HTTP {r.status_code}")
         return r
 
     def param(self, kv):
@@ -194,7 +195,7 @@ def state(p=None):
 @app.errorhandler(requests.RequestException)
 def cam_unreachable(e):
     print("camera unreachable:", type(e).__name__)
-    return jsonify(error=f"Kameran svarar inte ({type(e).__name__})"), 504
+    return jsonify(error=f"Camera is not responding ({type(e).__name__})"), 504
 
 
 @app.errorhandler(CameraError)
@@ -281,7 +282,7 @@ def put_params():
     changed = request.json or {}
     bad = [k for k in changed if not KEY.match(k)]
     if bad:
-        return jsonify(error=f"Ogiltig parameternyckel: {bad[0]}"), 400
+        return jsonify(error=f"Invalid parameter key: {bad[0]}"), 400
     if changed:
         cam.update(changed)  # the whole batch in one connection
         print("params updated:", " ".join(sorted(changed)))  # keys only, never values
@@ -308,7 +309,7 @@ def motion_add():
 @app.put("/api/motion/<idx>")
 def motion_update(idx):
     if not re.fullmatch(r"M\d", idx):
-        return jsonify(error="Ogiltigt fönster"), 400
+        return jsonify(error="Invalid window"), 400
     cam.update(window_fields(f"root.Motion.{idx}"))
     return jsonify(state())
 
@@ -316,7 +317,7 @@ def motion_update(idx):
 @app.delete("/api/motion/<idx>")
 def motion_delete(idx):
     if not re.fullmatch(r"M\d", idx):
-        return jsonify(error="Ogiltigt fönster"), 400
+        return jsonify(error="Invalid window"), 400
     cam.remove(f"root.Motion.{idx}")
     return jsonify(state())
 
@@ -380,6 +381,9 @@ def upload_target_test():
 def trigger():
     """Fire virtual input 6 (the web button, IO5) so the event runs without real motion."""
     cam.get("io/virtualinput.cgi", action="6:/")
+    # The input must stay high long enough for the event to run: a back-to-back pulse
+    # is missed entirely, and a short one yields pre-trigger frames but no post-trigger.
+    time.sleep(6)
     cam.get("io/virtualinput.cgi", action="6:\\")
     return jsonify(ok=True)
 
@@ -448,7 +452,7 @@ def backup():
 def action(name):
     paths = {"restart": "admin/restart.cgi", "factorydefault": "admin/factorydefault.cgi"}
     if name not in paths:
-        return jsonify(error="Okänd åtgärd"), 400
+        return jsonify(error="Unknown action"), 400
     cam.get(paths[name])
     return jsonify(ok=True)
 
@@ -495,7 +499,7 @@ HTML = r"""<!doctype html>
  label.risk::after{content:" ⚠";color:#a30}
  pre{background:#fff;border:1px solid #ddd;padding:10px;max-height:60vh;overflow:auto;white-space:pre-wrap}
 </style>
-<div id="status">Laddar…</div>
+<div id="status">Loading…</div>
 <div id="wrap">
 <nav id="nav"></nav>
 <main>
@@ -503,65 +507,65 @@ HTML = r"""<!doctype html>
 <section id="sec-live" hidden>
  <h2>Live</h2>
  <img id="livevid" alt="">
- <p><small>Strömmen hämtas från kamerans MJPEG-utgång och stängs när du byter sektion.</small></p>
+ <p><small>The stream comes from the camera's MJPEG output and is closed when you leave this section.</small></p>
 </section>
 
 <section id="sec-motion" hidden>
- <h2>Motion-fönster</h2>
+ <h2>Motion windows</h2>
  <div class="row">
   <div>
    <div id="stage"><img id="camimg" alt=""></div>
    <div id="bar"><div id="lvl"></div><div id="thr"></div></div>
-   <small>Live-nivå för valt fönster. Röd = över tröskeln (Object size).</small>
+   <small>Live activity level for the selected window. Red means above the trigger threshold (object size).</small>
   </div>
   <fieldset id="panel">
-   <legend>Valt fönster: <span id="selname">–</span></legend>
-   <label><span>Namn</span><input id="Name" pattern="[A-Za-z0-9 _-]+" size="18"></label>
-   <label><span>Typ</span><select id="WindowType"><option value="include">Include</option><option value="exclude">Exclude</option></select></label>
+   <legend>Selected window: <span id="selname">–</span></legend>
+   <label><span>Name</span><input id="Name" pattern="[A-Za-z0-9 _-]+" size="18"></label>
+   <label><span>Type</span><select id="WindowType"><option value="include">Include</option><option value="exclude">Exclude</option></select></label>
    <label><span>Object size</span><input type="range" id="ObjectSize" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
    <label><span>History</span><input type="range" id="History" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
    <label><span>Sensitivity</span><input type="range" id="Sensitivity" min="0" max="100" oninput="this.nextElementSibling.textContent=this.value"><output></output></label>
-   <small>Rekommenderat: Object size 5–15, History 60–90, Sensitivity 75–95. Ligger live-nivån över tröskeln med tomt rum triggar kameran på brus.</small><br>
-   <button id="save">Spara</button><button id="neu">Nytt fönster</button><button id="del">Ta bort</button><button id="reload">Läs om</button>
+   <small>Recommended: object size 5–15, history 60–90, sensitivity 75–95. If the level stays above the threshold with an empty room, the camera is triggering on noise.</small><br>
+   <button id="save">Save</button><button id="neu">New window</button><button id="del">Delete</button><button id="reload">Reload</button>
   </fieldset>
  </div>
 </section>
 
 <section id="sec-upload" hidden>
- <h2>HTTP-upload vid motion</h2>
+ <h2>HTTP upload on motion</h2>
  <fieldset>
   <label><span>URL</span><input id="url" size="40" value="__UPLOAD_URL__"></label>
-  <label><span>Format</span><select id="fileformat"><option value="jpg">JPEG-bilder</option><option value="mp4">MP4-klipp</option></select></label>
-  <label><span>Före trigger</span><input id="pre" type="number" min="0" max="30"> <small>bilder (1/s), för MP4 sekunder</small></label>
-  <label><span>Efter trigger</span><input id="post" type="number" min="0" max="30"> <small>bilder (1/s), för MP4 sekunder</small></label>
-  <label><span>Min-intervall (s)</span><input id="min_interval" type="number" min="0"></label>
-  <label><span>Aktiverad</span><input id="enabled" type="checkbox"></label>
+  <label><span>Format</span><select id="fileformat"><option value="jpg">JPEG images</option><option value="mp4">MP4 clips</option></select></label>
+  <label><span>Pre-trigger</span><input id="pre" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
+  <label><span>Post-trigger</span><input id="post" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
+  <label><span>Min interval (s)</span><input id="min_interval" type="number" min="0"></label>
+  <label><span>Enabled</span><input id="enabled" type="checkbox"></label>
   <div id="target"></div>
-  <button id="test">Testa anslutning</button><button id="savet">Spara</button><button id="trig">Trigga event nu</button>
+  <button id="test">Test connection</button><button id="savet">Save</button><button id="trig">Trigger event now</button>
  </fieldset>
- <h2 style="margin-top:18px">Mottagna uploads</h2>
+ <h2 style="margin-top:18px">Received uploads</h2>
  <table id="uploads"></table>
 </section>
 
 <section id="sec-params" hidden>
  <h2 id="ptitle"></h2>
  <div id="params"></div>
- <button id="psave">Spara ändrade</button><button id="preload">Läs om</button>
+ <button id="psave">Save changes</button><button id="preload">Reload</button>
  <span id="pcount"></span>
 </section>
 
 <section id="sec-maint" hidden>
- <h2>Underhåll</h2>
+ <h2>Maintenance</h2>
  <p>
-  <button id="mlog">Systemlogg</button>
-  <button id="mrep">Serverrapport</button>
-  <a href="/api/backup">Hämta backup</a>
+  <button id="mlog">System log</button>
+  <button id="mrep">Server report</button>
+  <a href="/api/backup">Download backup</a>
  </p>
- <pre id="mout">Serverrapporten innehåller kamerans lösenord i klartext. Dela den inte.</pre>
+ <pre id="mout">The server report contains the camera's passwords in cleartext. Do not share it.</pre>
  <p>
-  <button id="mrestart">Starta om kameran</button>
-  <button id="mfact">Fabriksåterställ</button>
-  <small>Fabriksåterställning behåller nätverksinställningarna. Återställning från backup görs i kamerans egen sida.</small>
+  <button id="mrestart">Restart camera</button>
+  <button id="mfact">Factory reset</button>
+  <small>Factory reset keeps the network settings. Restoring from a backup is done in the camera's own interface.</small>
  </p>
 </section>
 
@@ -577,14 +581,14 @@ let st=null, P=null, RISK=new Set(), sel=null, es=null, cur=null, snapTried=fals
 
 function status(m,err){statusEl.textContent=m;statusEl.className=err?'err':'';}
 async function api(method,url,body){
-  status('Pratar med kameran… (kan ta upp till 70 s)');
+  status('Talking to the camera… (can take up to 70 s)');
   document.querySelectorAll('button').forEach(b=>b.disabled=true);
   try{
     const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body&&JSON.stringify(body)});
     const j=await r.json();
-    if(!r.ok){if(st)render(st);status('Fel: '+j.error+' – visar senast bekräftade läge. "Läs om" hämtar kamerans.',true);return null;}
-    status('Klart');return j;
-  }catch(e){status('Fel: '+e.message,true);return null;}
+    if(!r.ok){if(st)render(st);status('Error: '+j.error+' - showing the last confirmed state. Reload fetches the camera\'s.',true);return null;}
+    status('Done');return j;
+  }catch(e){status('Error: '+e.message,true);return null;}
   finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}
 }
 
@@ -597,7 +601,7 @@ function buildNav(){
   n.appendChild(document.createElement('hr'));
   for(const [id,label] of SECTIONS)add(id,label);
   n.appendChild(document.createElement('hr'));
-  add('maint','Underhåll');
+  add('maint','Maintenance');
 }
 function videoOn(el){el.src='/video.mjpg?'+Date.now();}
 function videoOff(el){el.removeAttribute('src');}
@@ -652,7 +656,7 @@ function live(id){
     $('lvl').style.width=Math.min(l,100)+'%';$('thr').style.left=Math.min(t,100)+'%';
     $('lvl').style.background=l>=t?'#c00':'#0a0';};
   // no auto-reconnect: every retry would be a new camera connection
-  es.onerror=()=>{es.close();status('Live-nivå avbruten – klicka på fönstret för att återansluta.',true);};
+  es.onerror=()=>{es.close();status('Live level interrupted - click the window to reconnect.',true);};
 }
 stage.onpointerdown=e=>{
   const el=e.target.closest('.win');if(!el)return;
@@ -676,7 +680,7 @@ function rectOf(id){
 const vals=()=>({Name:$('Name').value,WindowType:$('WindowType').value,ObjectSize:+$('ObjectSize').value,History:+$('History').value,Sensitivity:+$('Sensitivity').value});
 $('save').onclick=async()=>{
   if(!sel)return;
-  if(!$('Name').checkValidity()||!$('Name').value)return status('Namn: bara A–Z, 0–9, mellanslag, _ och -.',true);
+  if(!$('Name').checkValidity()||!$('Name').value)return status('Name: only A-Z, 0-9, space, _ and -.',true);
   const s=await api('PUT','/api/motion/'+sel,{...rectOf(sel),...vals()});if(s)render(s);
 };
 $('neu').onclick=async()=>{
@@ -684,7 +688,7 @@ $('neu').onclick=async()=>{
   if(s){render(s);select(s.added);}
 };
 $('del').onclick=async()=>{
-  if(!sel||!confirm('Ta bort '+sel+'?'))return;
+  if(!sel||!confirm('Delete '+sel+'?'))return;
   const s=await api('DELETE','/api/motion/'+sel);if(s){sel=null;render(s);if(sel)select(sel);}
 };
 $('reload').onclick=load;
@@ -700,17 +704,17 @@ function fillTarget(){
   $('min_interval').value=(e.MinimumTriggerInterval||'0').split(':').reduce((a,b)=>a*60+ +b,0);
   $('enabled').checked=e.Enabled==='yes';
   $('target').textContent=act
-    ?'Kameran: upload-action '+act[0]+' → server '+act[1].Server+(srv?' ('+st.servers[srv].Address+')':'')+', event '+(e.Enabled==='yes'?'aktiverat':'avstängt')+', trigger '+e.SWInput
-    :'Kameran har ingen HTTP-upload-action ännu. Spara för att skapa server + action.';
+    ?'Camera: upload action '+act[0]+' -> server '+act[1].Server+(srv?' ('+st.servers[srv].Address+')':'')+', event '+(e.Enabled==='yes'?'enabled':'disabled')+', trigger '+e.SWInput
+    :'The camera has no HTTP upload action yet. Save to create the server and action.';
 }
 const target=()=>({url:$('url').value,fileformat:$('fileformat').value,pre:+$('pre').value,post:+$('post').value,min_interval:+$('min_interval').value,enabled:$('enabled').checked});
 $('savet').onclick=async()=>{const s=await api('PUT','/api/upload-target',target());if(s)render(s);};
-$('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test misslyckades: ')+j.text,!j.ok);};
-$('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggat. Bilderna dyker upp i listan inom några sekunder.');};
+$('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
+$('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggered. Images appear in the list within a few seconds.');};
 async function loadUploads(){
   const u=await (await fetch('/api/uploads')).json();
   const t=$('uploads');t.innerHTML='';
-  if(!u.length){t.innerHTML='<tr><td>Inga uploads mottagna sedan start.</td></tr>';return;}
+  if(!u.length){t.innerHTML='<tr><td>No uploads received since start.</td></tr>';return;}
   for(const x of u){const tr=t.insertRow();
     tr.insertCell().textContent=x.ts;
     const a=document.createElement('a');a.href='/uploads/'+encodeURIComponent(x.name);a.target='_blank';a.textContent=x.name;
@@ -738,7 +742,7 @@ function field(k){
     for(const [val,nice] of d.values){
       const o=document.createElement('option');o.value=val;o.textContent=nice;inp.appendChild(o);}
     if(!d.values.some(x=>x[0]===v)){   // keep an out-of-range current value visible
-      const o=document.createElement('option');o.value=v;o.textContent=v+' (nuvarande)';inp.appendChild(o);}
+      const o=document.createElement('option');o.value=v;o.textContent=v+' (current)';inp.appendChild(o);}
     inp.value=v;
   }else if(d.kind==='bool'){
     inp=document.createElement('input');inp.type='checkbox';inp.checked=v===d.true;
@@ -759,7 +763,7 @@ function field(k){
   lab.append(sp,inp);
   if(d.kind==='int'&&d.min!==undefined&&d.max!==undefined){
     const s=document.createElement('small');s.textContent=' '+d.min+'–'+d.max;lab.appendChild(s);}
-  if(pw){const b=document.createElement('button');b.type='button';b.className='mini';b.textContent='visa';
+  if(pw){const b=document.createElement('button');b.type='button';b.className='mini';b.textContent='show';
     b.onclick=()=>{inp.type=inp.type==='password'?'text':'password';};lab.appendChild(b);}
   if(RISK.has(k))lab.classList.add('risk');
   return lab;
@@ -781,7 +785,7 @@ async function renderParams(id){
     for(const k of by[path])d.appendChild(field(k));
     box.appendChild(d);
   }
-  $('pcount').textContent=keys.length+' parametrar';
+  $('pcount').textContent=keys.length+' parameters';
 }
 function changedParams(){
   const out={};
@@ -795,31 +799,31 @@ function changedParams(){
 }
 $('psave').onclick=async()=>{
   const ch=changedParams(), keys=Object.keys(ch);
-  if(!keys.length)return status('Inget ändrat.');
+  if(!keys.length)return status('Nothing changed.');
   const risky=keys.filter(k=>RISK.has(k));
-  if(risky.length&&!confirm('Följande kan göra kameran oåtkomlig:\n\n'+risky.join('\n')+'\n\nSpara ändå?'))return;
+  if(risky.length&&!confirm('These settings can make the camera unreachable:\n\n'+risky.join('\n')+'\n\nSave anyway?'))return;
   const s=await api('PUT','/api/params',ch);
-  if(s){render(s);renderParams(cur);status(keys.length+' parametrar sparade.');}
+  if(s){render(s);renderParams(cur);status(keys.length+' parameters saved.');}
 };
 $('preload').onclick=async()=>{const s=await api('GET','/api/state');if(s){render(s);renderParams(cur);}};
 
 /* ---------------------------------------------------------------- maintenance */
 async function showText(url,label){
-  status('Hämtar '+label+'…');
+  status('Fetching '+label+'…');
   document.querySelectorAll('button').forEach(b=>b.disabled=true);
-  try{$('mout').textContent=await (await fetch(url)).text();status('Klart');}
-  catch(e){status('Fel: '+e.message,true);}
+  try{$('mout').textContent=await (await fetch(url)).text();status('Done');}
+  catch(e){status('Error: '+e.message,true);}
   finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}
 }
-$('mlog').onclick=()=>showText('/api/systemlog','systemlogg');
-$('mrep').onclick=()=>showText('/api/serverreport','serverrapport');
+$('mlog').onclick=()=>showText('/api/systemlog','system log');
+$('mrep').onclick=()=>showText('/api/serverreport','server report');
 $('mrestart').onclick=async()=>{
-  if(!confirm('Starta om kameran? Den är otillgänglig i ungefär en minut.'))return;
-  if(await api('POST','/api/action/restart'))status('Omstart beordrad. Vänta ungefär en minut och tryck Läs om.');
+  if(!confirm('Restart the camera? It will be unavailable for about a minute.'))return;
+  if(await api('POST','/api/action/restart'))status('Restart requested. Wait about a minute, then press Reload.');
 };
 $('mfact').onclick=async()=>{
-  if(!confirm('Fabriksåterställ kameran? All konfiguration utom nätverksinställningar raderas, inklusive motion-fönster och upload-inställningar.'))return;
-  if(await api('POST','/api/action/factorydefault'))status('Fabriksåterställning beordrad.');
+  if(!confirm('Factory reset the camera? All configuration except network settings is erased, including motion windows and upload settings.'))return;
+  if(await api('POST','/api/action/factorydefault'))status('Factory reset requested.');
 };
 
 /* ---------------------------------------------------------------- startup */
