@@ -11,7 +11,6 @@
 # host running this file:
 #   macOS:  sudo sysctl -w net.inet.tcp.rfc1323=0
 #   Linux:  iptables -t mangle -A OUTPUT -d <camera-ip> -p tcp --syn -j TCPOPTSTRIP --strip-options timestamp
-import collections
 import datetime
 import json
 import os
@@ -127,7 +126,6 @@ class Camera:
 
 app = Flask(__name__)
 cam = Camera(HOST, USER, PASS)
-uploads = collections.deque(maxlen=50)
 
 
 # --------------------------------------------------------------------- upload receiver
@@ -136,7 +134,6 @@ def save_upload(ts, filename, data):
     name = f"{ts}-{os.path.basename(filename or 'image.jpg')}"
     with open(os.path.join(UPLOAD_DIR, name), "wb") as f:
         f.write(data)
-    uploads.appendleft({"ts": ts, "name": name, "size": len(data)})
     return name
 
 
@@ -156,7 +153,22 @@ def upload():
 
 @app.get("/api/uploads")
 def api_uploads():
-    return jsonify(list(uploads))
+    """The upload directory is the source of truth, so the list survives a restart.
+    Names begin with the receive timestamp, so a reverse name sort is newest first."""
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 20))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify(error="Invalid offset or limit"), 400
+    names = sorted((e.name for e in os.scandir(UPLOAD_DIR) if e.is_file()), reverse=True)
+    items = []
+    for n in names[offset:offset + limit]:
+        try:
+            items.append({"name": n, "ts": "-".join(n.split("-")[:3]),
+                          "size": os.path.getsize(os.path.join(UPLOAD_DIR, n))})
+        except OSError:
+            pass  # removed between listing and stat
+    return jsonify(items=items, total=len(names), offset=offset, limit=limit)
 
 
 @app.get("/uploads/<name>")
@@ -545,6 +557,8 @@ HTML = r"""<!doctype html>
  </fieldset>
  <h2 style="margin-top:18px">Received uploads</h2>
  <table id="uploads"></table>
+ <p><button id="upprev">Previous</button><button id="upnext">Next</button>
+    <small id="uppage"></small></p>
 </section>
 
 <section id="sec-params" hidden>
@@ -708,19 +722,33 @@ function fillTarget(){
     :'The camera has no HTTP upload action yet. Save to create the server and action.';
 }
 const target=()=>({url:$('url').value,fileformat:$('fileformat').value,pre:+$('pre').value,post:+$('post').value,min_interval:+$('min_interval').value,enabled:$('enabled').checked});
-$('savet').onclick=async()=>{const s=await api('PUT','/api/upload-target',target());if(s)render(s);};
+$('savet').onclick=async()=>{
+  // Changing the format is easy to do by accident and quietly changes what arrives.
+  const now=st.event.FileFormat==='mp4'?'mp4':'jpg', want=$('fileformat').value;
+  if(now!==want&&!confirm('Change the upload format from '+now+' to '+want+'?\n\n'
+      +'jpg uploads a burst of still images per event, mp4 uploads one video clip.'))return;
+  const s=await api('PUT','/api/upload-target',target());if(s)render(s);};
 $('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
 $('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggered. Images appear in the list within a few seconds.');};
+const PAGE=20;
+let upOffset=0, upTotal=0, upShown=0;
+const stamp=s=>s.length>=15?s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8)+' '+s.slice(9,11)+':'+s.slice(11,13)+':'+s.slice(13,15):s;
 async function loadUploads(){
-  const u=await (await fetch('/api/uploads')).json();
+  const j=await (await fetch('/api/uploads?offset='+upOffset+'&limit='+PAGE)).json();
+  upTotal=j.total; upShown=j.items.length;
   const t=$('uploads');t.innerHTML='';
-  if(!u.length){t.innerHTML='<tr><td>No uploads received since start.</td></tr>';return;}
-  for(const x of u){const tr=t.insertRow();
-    tr.insertCell().textContent=x.ts;
+  if(!j.items.length){t.innerHTML='<tr><td>No uploads in '+'the upload directory yet.</td></tr>';}
+  for(const x of j.items){const tr=t.insertRow();
+    tr.insertCell().textContent=stamp(x.ts);
     const a=document.createElement('a');a.href='/uploads/'+encodeURIComponent(x.name);a.target='_blank';a.textContent=x.name;
     tr.insertCell().appendChild(a);
-    tr.insertCell().textContent=x.size+' B';}
+    tr.insertCell().textContent=(x.size/1024).toFixed(1)+' kB';}
+  $('uppage').textContent=j.total?(j.offset+1)+'-'+(j.offset+upShown)+' of '+j.total:'';
+  $('upprev').disabled=upOffset===0;
+  $('upnext').disabled=upOffset+upShown>=upTotal;
 }
+$('upprev').onclick=()=>{if(upOffset===0)return;upOffset=Math.max(0,upOffset-PAGE);loadUploads();};
+$('upnext').onclick=()=>{if(upOffset+upShown>=upTotal)return;upOffset+=PAGE;loadUploads();};
 
 /* ---------------------------------------------------------------- generic parameters */
 const READONLY=/^root\.(Properties|Brand)\./;
@@ -834,7 +862,8 @@ async function load(){
 }
 buildNav();
 load().then(()=>go(location.hash.slice(1)||'live'));
-setInterval(()=>{if(cur==='upload')loadUploads();},5000);
+// only refresh the newest page, so a list being paged through does not shift underneath
+setInterval(()=>{if(cur==='upload'&&upOffset===0)loadUploads();},5000);
 </script>
 """
 
