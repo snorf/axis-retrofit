@@ -135,6 +135,17 @@ complaint and then never uploads anything.
 `Content-Type: image/jpeg` and the filename in `Content-Disposition`. A receiver that only
 looks for multipart form files will silently store nothing.
 
+**MP4 clips use MPEG-4 Part 2, which modern players refuse.** The camera writes a valid
+file with both tracks, video as `mp4v` and audio as AAC, but QuickTime, Preview and Safari
+dropped MPEG-4 Part 2 support, so they play the audio and show nothing. The video is fine:
+VLC, IINA, mpv and ffmpeg all decode it. Convert a clip with
+
+```sh
+ffmpeg -i clip.mp4 -c:v libx264 -c:a aac clip-h264.mp4
+```
+
+This is why JPEG is the better default. Stills need no codec support at all.
+
 **Noise triggers motion.** If the measured activity level sits above the threshold with an
 empty room, the camera will upload continuously. Lowering sensitivity usually helps more
 than raising object size, because it reduces the measured level rather than moving the
