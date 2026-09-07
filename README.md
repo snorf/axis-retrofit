@@ -100,9 +100,13 @@ filesystem quickly. There is no retention policy yet: nothing deletes old images
 ### Setting up motion upload
 
 Open the **Upload** section. The URL field is pre-filled with the address the camera can
-reach this server on. Press **Testa anslutning** to have the camera verify it can reach
-you, then **Spara**. That creates the HTTP event server and the upload action on the
-camera, and enables the event. **Trigga event nu** fires a test event.
+reach this server on. Press **Test connection** to have the camera verify it can reach you,
+then **Save**. That creates the HTTP event server and the upload action on the camera, and
+enables the event. **Trigger event now** fires a test event.
+
+Choose **JPEG images** unless you want video. With **MP4 clips** the camera uploads one
+recording per event instead of a burst of stills, which is easy to select by accident and
+then looks like nothing is arriving if you are watching for images.
 
 ## Things worth knowing about this hardware
 
