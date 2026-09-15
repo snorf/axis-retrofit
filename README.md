@@ -62,7 +62,8 @@ All configuration is environment variables:
 | `AXIS_HOST` | required | Camera hostname or IP |
 | `AXIS_CREDS` | `.axis-creds` | File containing `username:password` |
 | `UPLOAD_DIR` | `./uploads` | Where uploaded images are written |
-| `PORT` | `6001` | Port this server listens on |
+| `PORT` | `6001` | Port the web interface listens on |
+| `UPLOAD_PORT` | `PORT + 1` | Port the camera uploads to |
 | `ADVERTISE_HOST` | detected | Address the camera uploads to, `host` or `host:port` |
 
 Do not use port 6000. Chrome, Edge and Firefox all refuse to open it, because it is on
@@ -89,7 +90,7 @@ systemctl enable --now axis
 ```
 
 The camera opens connections *to* this server, so it needs to be reachable from the camera's
-network on `PORT`. Give the container or VM an address on the same LAN as the camera. If you
+network on both `PORT` and `UPLOAD_PORT`. Give the container or VM an address on the same LAN as the camera. If you
 run it in a container with a bridged or NAT network instead, publish the port and set
 `ADVERTISE_HOST` to the host's LAN address, otherwise the upload URL offered in the interface
 will be an address the camera cannot reach.
@@ -127,6 +128,14 @@ sudo sysctl -w net.inet.tcp.rfc1323=0
 # Linux
 iptables -t mangle -A OUTPUT -d <camera-ip> -p tcp --syn -j TCPOPTSTRIP --strip-options timestamp
 ```
+
+**The camera's HTTP client waits for the connection to close.** It ignores Content-Length
+in the response and reads until the server hangs up. A WSGI server that keeps the socket
+open leaves it waiting, and after 60 seconds it abandons the upload, logs `Timeout waiting
+for response from server`, and retries the same picture. The visible symptom is exactly one
+image per event no matter how large the pre- and post-trigger buffers are. This is why
+uploads are handled by a small dedicated listener on `UPLOAD_PORT` that shuts the connection
+down explicitly, rather than by a route in the web application.
 
 **The event file format has exactly two working values, `jpg` and `mp4`.** The parameter is
 typed as a free string in the camera's own schema, so it accepts anything, and any other

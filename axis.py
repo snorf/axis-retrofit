@@ -16,6 +16,7 @@ import json
 import os
 import re
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -25,12 +26,21 @@ from urllib.parse import urlencode
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
 from requests.auth import HTTPBasicAuth
+from werkzeug.serving import WSGIRequestHandler
+
+# The camera speaks HTTP/1.0 and waits for the connection to close instead of honouring
+# Content-Length. Werkzeug answers HTTP/1.1 and keeps the socket open, so the camera stalls
+# for 60 s, gives up and retries the same image; only one picture per event ever arrives.
+# Answering HTTP/1.0 makes the server close after each response.
+WSGIRequestHandler.protocol_version = "HTTP/1.0"
 
 sys.stdout.reconfigure(line_buffering=True)  # so print() reaches a log file / journal promptly
 
 HOST = os.environ.get("AXIS_HOST", "")
 UPLOAD_DIR = os.path.abspath(os.environ.get("UPLOAD_DIR", "./uploads"))
 PORT = int(os.environ.get("PORT", "6001"))  # not 6000: browsers refuse it as an unsafe port
+# The camera uploads to its own listener, not to Flask; see UploadHandler.
+UPLOAD_PORT = int(os.environ.get("UPLOAD_PORT", PORT + 1))
 CREDS = os.environ.get("AXIS_CREDS", ".axis-creds")
 # Address the camera should upload to. Only needed when this cannot be detected from the
 # route to the camera, i.e. behind NAT (a bridged container) or a reverse proxy.
@@ -137,18 +147,58 @@ def save_upload(ts, filename, data):
     return name
 
 
-@app.route("/upload", methods=["POST", "GET"])
-def upload():
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    saved = [save_upload(ts, request.files[k].filename, request.files[k].read())
-             for k in request.files]
-    if not saved:  # the camera posts a raw image body with the name in Content-Disposition
-        body = request.get_data()
-        if body:
-            m = re.search(r'filename="([^"]+)"', request.headers.get("Content-Disposition", ""))
-            saved.append(save_upload(ts, m.group(1) if m else "image.jpg", body))
-    print(request.method, "/upload from", request.remote_addr, "saved:", saved)
-    return "OK", 200
+class UploadHandler(socketserver.StreamRequestHandler):
+    """Receives the images the camera posts.
+
+    This is deliberately not a Flask route. The camera's HTTP client waits for the server
+    to close the connection and ignores Content-Length, and Werkzeug keeps the socket open
+    after responding. The camera then stalls for 60 s, abandons the upload and retries the
+    same picture, so only one image per event ever arrives. Forty lines of socket code that
+    shut the connection down explicitly are worth more here than a WSGI server."""
+
+    timeout = 30
+
+    def handle(self):
+        try:
+            line = self.rfile.readline(8192)
+            if not line:
+                return
+            method = line.split(b" ", 1)[0].upper()
+            headers = {}
+            while True:
+                h = self.rfile.readline(8192)
+                if h in (b"\r\n", b"\n", b""):
+                    break
+                k, _, v = h.decode("latin-1").partition(":")
+                headers[k.strip().lower()] = v.strip()
+            body = b""
+            n = int(headers.get("content-length", "0") or 0)
+            while n > 0:  # read exactly Content-Length; the camera appends a stray CRLF
+                chunk = self.rfile.read(min(n, 65536))
+                if not chunk:
+                    break
+                body += chunk
+                n -= len(chunk)
+            if method == b"POST" and body:
+                ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                m = re.search(r'filename="([^"]+)"', headers.get("content-disposition", ""))
+                name = save_upload(ts, m.group(1) if m else "image.jpg", body)
+                print("upload from", self.client_address[0], len(body), "bytes:", name)
+            self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n"
+                             b"Connection: close\r\n\r\n")
+            self.wfile.flush()
+        except (OSError, ValueError) as e:
+            print("upload from", self.client_address[0], "failed:", e)
+        finally:
+            try:  # the camera is waiting for this, and only this
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+class UploadServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 @app.get("/api/uploads")
@@ -227,7 +277,7 @@ def index():
         except OSError:
             where = "127.0.0.1"
     if ":" not in where:
-        where = f"{where}:{PORT}"
+        where = f"{where}:{UPLOAD_PORT}"
     return (HTML.replace("__UPLOAD_URL__", f"http://{where}/upload")
                 .replace("__SECTIONS__", json.dumps(SECTIONS))
                 .replace("__CAMERA__", HOST))
@@ -867,4 +917,7 @@ setInterval(()=>{if(cur==='upload'&&upOffset===0)loadUploads();},5000);
 </script>
 """
 
+upload_server = UploadServer(("0.0.0.0", UPLOAD_PORT), UploadHandler)
+threading.Thread(target=upload_server.serve_forever, daemon=True).start()
+print(f"upload receiver on :{UPLOAD_PORT}, web interface on :{PORT}")
 app.run(host="0.0.0.0", port=PORT, threaded=True)
