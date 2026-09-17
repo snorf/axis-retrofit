@@ -835,9 +835,13 @@ $('savet').onclick=async()=>{
 $('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
 $('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggered. Images appear in the list within a few seconds.');};
 const PAGE=15;
-let evOffset=0, evTotal=0, evShown=0, EV=[], evSel=-1, imgIdx=0, play=null;
+let evOffset=0, evTotal=0, evShown=0, EV=[], evSel=-1, imgIdx=0, play=null, evSig='';
 async function loadUploads(){
   const j=await (await fetch('/api/events?offset='+evOffset+'&limit='+PAGE)).json();
+  // Rebuilding an unchanged table swallows a click that lands during the refresh.
+  const sig=JSON.stringify([j.total,j.offset,j.items.map(e=>e.start+'/'+e.files.length)]);
+  if(sig===evSig&&$('events').rows.length)return;
+  evSig=sig;
   evTotal=j.total; evShown=j.items.length; EV=j.items;
   const t=$('events');t.innerHTML='';
   if(!EV.length){t.innerHTML='<tr><td>No events in the upload directory yet.</td></tr>';}
@@ -862,6 +866,7 @@ function selectEvent(i){
   document.querySelectorAll('#events tr').forEach((tr,n)=>tr.className=n===i?'sel':'');
   $('viewer').hidden=false;
   showImage();
+  if(EV[i].files.length>1)startPlay();   // an event is a short clip; play it
 }
 function showImage(){
   const e=EV[evSel];if(!e)return;
@@ -881,12 +886,12 @@ function step(d){
 $('imgprev').onclick=()=>{stopPlay();step(-1);};
 $('imgnext').onclick=()=>{stopPlay();step(1);};
 function stopPlay(){if(play){clearInterval(play);play=null;$('imgplay').textContent='Play';}}
-$('imgplay').onclick=()=>{
-  if(play){stopPlay();return;}
-  if(evSel<0)return;
+function startPlay(){   // loops; prev/next or leaving the section stops it
+  if(play||evSel<0)return;
   $('imgplay').textContent='Stop';
-  play=setInterval(()=>step(1),700);   // loops; prev/next or leaving the section stops it
-};
+  play=setInterval(()=>step(1),700);
+}
+$('imgplay').onclick=()=>{play?stopPlay():startPlay();};
 
 /* ---------------------------------------------------------------- generic parameters */
 const READONLY=/^root\.(Properties|Brand)\./;
