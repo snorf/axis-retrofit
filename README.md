@@ -15,9 +15,10 @@ endpoints directly instead, so everything works in a normal browser again.
   live image, with sliders for object size, history and sensitivity, and a live activity
   bar showing the measured level against the trigger threshold.
 - **Motion upload.** Point the camera at this server and it posts JPEG images (or MP4
-  clips) on every motion event. Received files are listed and viewable in the GUI, read
-  straight from the upload directory and paged twenty at a time, so the list survives a
-  restart and does not grow in memory.
+  clips) on every motion event. Images are grouped back into events by capture time and
+  listed newest first, with a viewer beside the list for stepping through an event frame by
+  frame or playing it back as a loop. The list is read straight from the upload directory,
+  so it survives a restart and does not grow in memory.
 - **Every camera setting.** All parameters the camera exposes, grouped into sections in a
   left-hand menu, editable and saved back in a single request. The form is built from the
   camera's own parameter schema, so enumerated settings are dropdowns with exactly the

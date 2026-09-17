@@ -201,24 +201,63 @@ class UploadServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-@app.get("/api/uploads")
-def api_uploads():
-    """The upload directory is the source of truth, so the list survives a restart.
-    Names begin with the receive timestamp, so a reverse name sort is newest first."""
+EVENT_GAP = 8  # seconds between two captures that starts a new event
+
+
+def capture_time(name):
+    """When the camera took the picture, from its own stamp in the filename, falling back
+    to when we received it."""
+    m = re.search(r"(\d\d)-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)", name)
+    if m:
+        y, mo, d, H, M, S = (int(g) for g in m.groups())
+        try:
+            return datetime.datetime(2000 + y, mo, d, H, M, S)
+        except ValueError:
+            pass
+    m = re.match(r"(\d{8})-(\d{6})", name)
+    if m:
+        try:
+            return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    return datetime.datetime.min
+
+
+def uploaded_events():
+    """Files grouped into events, newest event first, images within an event in order."""
+    files = []
+    for e in os.scandir(UPLOAD_DIR):
+        if e.is_file():
+            try:
+                files.append((capture_time(e.name), e.name, e.stat().st_size))
+            except OSError:
+                pass  # removed while listing
+    files.sort()
+    events = []
+    for f in files:
+        if events and (f[0] - events[-1][-1][0]).total_seconds() <= EVENT_GAP:
+            events[-1].append(f)
+        else:
+            events.append([f])
+    events.reverse()
+    return events
+
+
+@app.get("/api/events")
+def api_events():
+    """The upload directory is the source of truth, so the list survives a restart."""
     try:
-        limit = max(1, min(200, int(request.args.get("limit", 20))))
+        limit = max(1, min(100, int(request.args.get("limit", 15))))
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         return jsonify(error="Invalid offset or limit"), 400
-    names = sorted((e.name for e in os.scandir(UPLOAD_DIR) if e.is_file()), reverse=True)
-    items = []
-    for n in names[offset:offset + limit]:
-        try:
-            items.append({"name": n, "ts": "-".join(n.split("-")[:3]),
-                          "size": os.path.getsize(os.path.join(UPLOAD_DIR, n))})
-        except OSError:
-            pass  # removed between listing and stat
-    return jsonify(items=items, total=len(names), offset=offset, limit=limit)
+    events = uploaded_events()
+    items = [{"start": g[0][0].isoformat(sep=" ", timespec="seconds"),
+              "seconds": int((g[-1][0] - g[0][0]).total_seconds()),
+              "bytes": sum(f[2] for f in g),
+              "files": [f[1] for f in g]}
+             for g in events[offset:offset + limit]]
+    return jsonify(items=items, total=len(events), offset=offset, limit=limit)
 
 
 @app.get("/uploads/<name>")
@@ -555,6 +594,11 @@ HTML = r"""<!doctype html>
  button.mini{margin:0 0 0 6px;font-size:11px}
  table{border-collapse:collapse}td{padding:2px 10px 2px 0;border-bottom:1px solid #eee}
  small{color:#666}
+ table.pick tr{cursor:pointer}
+ table.pick tr:hover td{background:#eef}
+ table.pick tr.sel td{background:#225;color:#fff}
+ #shot{width:640px;height:480px;background:#000;display:flex;align-items:center;justify-content:center}
+ #shot img{max-width:100%;max-height:100%;display:block}
  details{border:1px solid #ddd;border-radius:4px;margin:6px 0;padding:4px 10px;background:#fff}
  summary{cursor:pointer;font-weight:600;padding:3px 0}
  label.risk span{color:#a30}
@@ -598,17 +642,26 @@ HTML = r"""<!doctype html>
  <fieldset>
   <label><span>URL</span><input autocomplete="off" id="url" size="40" value="__UPLOAD_URL__"></label>
   <label><span>Format</span><select autocomplete="off" id="fileformat"><option value="jpg">JPEG images</option><option value="mp4">MP4 clips</option></select></label>
-  <label><span>Pre-trigger</span><input autocomplete="off" id="pre" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
-  <label><span>Post-trigger</span><input autocomplete="off" id="post" type="number" min="0" max="30"> <small>images (1/s), seconds for MP4</small></label>
+  <label><span>Pre-trigger</span><input autocomplete="off" id="pre" type="number" min="0" max="30"> <small>seconds, one image per second</small></label>
+  <label><span>Post-trigger</span><input autocomplete="off" id="post" type="number" min="0" max="30"> <small>seconds, one image per second</small></label>
   <label><span>Min interval (s)</span><input autocomplete="off" id="min_interval" type="number" min="0"></label>
   <label><span>Enabled</span><input autocomplete="off" id="enabled" type="checkbox"></label>
   <div id="target"></div>
   <button id="test">Test connection</button><button id="savet">Save</button><button id="trig">Trigger event now</button>
  </fieldset>
- <h2 style="margin-top:18px">Received uploads</h2>
- <table id="uploads"></table>
- <p><button id="upprev">Previous</button><button id="upnext">Next</button>
-    <small id="uppage"></small></p>
+ <h2 style="margin-top:18px">Events</h2>
+ <div class="row">
+  <div>
+   <table id="events" class="pick"></table>
+   <p><button id="evprev">Previous</button><button id="evnext">Next</button>
+      <small id="evpage"></small></p>
+  </div>
+  <div id="viewer" hidden>
+   <div id="shot"><img id="shotimg" alt=""></div>
+   <p><button id="imgprev">&#9664;</button><button id="imgplay">Play</button><button id="imgnext">&#9654;</button>
+      <small id="imgpos"></small> &nbsp;<a id="imglink" target="_blank">open full size</a></p>
+  </div>
+ </div>
 </section>
 
 <section id="sec-params" hidden>
@@ -672,6 +725,7 @@ function videoOff(el){el.removeAttribute('src');}
 function go(id){
   if(cur===id)return;
   videoOff($('livevid'));videoOff($('camimg'));      // free the camera connection
+  stopPlay();
   if(es){es.close();es=null;}
   cur=id;location.hash=id;
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.id===id));
@@ -780,25 +834,59 @@ $('savet').onclick=async()=>{
   const s=await api('PUT','/api/upload-target',target());if(s)render(s);};
 $('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
 $('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggered. Images appear in the list within a few seconds.');};
-const PAGE=20;
-let upOffset=0, upTotal=0, upShown=0;
-const stamp=s=>s.length>=15?s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8)+' '+s.slice(9,11)+':'+s.slice(11,13)+':'+s.slice(13,15):s;
+const PAGE=15;
+let evOffset=0, evTotal=0, evShown=0, EV=[], evSel=-1, imgIdx=0, play=null;
 async function loadUploads(){
-  const j=await (await fetch('/api/uploads?offset='+upOffset+'&limit='+PAGE)).json();
-  upTotal=j.total; upShown=j.items.length;
-  const t=$('uploads');t.innerHTML='';
-  if(!j.items.length){t.innerHTML='<tr><td>No uploads in '+'the upload directory yet.</td></tr>';}
-  for(const x of j.items){const tr=t.insertRow();
-    tr.insertCell().textContent=stamp(x.ts);
-    const a=document.createElement('a');a.href='/uploads/'+encodeURIComponent(x.name);a.target='_blank';a.textContent=x.name;
-    tr.insertCell().appendChild(a);
-    tr.insertCell().textContent=(x.size/1024).toFixed(1)+' kB';}
-  $('uppage').textContent=j.total?(j.offset+1)+'-'+(j.offset+upShown)+' of '+j.total:'';
-  $('upprev').disabled=upOffset===0;
-  $('upnext').disabled=upOffset+upShown>=upTotal;
+  const j=await (await fetch('/api/events?offset='+evOffset+'&limit='+PAGE)).json();
+  evTotal=j.total; evShown=j.items.length; EV=j.items;
+  const t=$('events');t.innerHTML='';
+  if(!EV.length){t.innerHTML='<tr><td>No events in the upload directory yet.</td></tr>';}
+  EV.forEach((e,i)=>{const tr=t.insertRow();
+    tr.onclick=()=>selectEvent(i);
+    if(i===evSel)tr.className='sel';
+    tr.insertCell().textContent=e.start;
+    tr.insertCell().textContent=e.files.length+(e.files.length===1?' image':' images');
+    tr.insertCell().textContent=e.seconds+' s';
+    tr.insertCell().textContent=(e.bytes/1024).toFixed(0)+' kB';});
+  $('evpage').textContent=j.total?(j.offset+1)+'-'+(j.offset+evShown)+' of '+j.total:'';
+  $('evprev').disabled=evOffset===0;
+  $('evnext').disabled=evOffset+evShown>=evTotal;
+  if(evSel>=EV.length){evSel=-1;$('viewer').hidden=true;stopPlay();}
 }
-$('upprev').onclick=()=>{if(upOffset===0)return;upOffset=Math.max(0,upOffset-PAGE);loadUploads();};
-$('upnext').onclick=()=>{if(upOffset+upShown>=upTotal)return;upOffset+=PAGE;loadUploads();};
+$('evprev').onclick=()=>{if(evOffset===0)return;evOffset=Math.max(0,evOffset-PAGE);evSel=-1;$('viewer').hidden=true;stopPlay();loadUploads();};
+$('evnext').onclick=()=>{if(evOffset+evShown>=evTotal)return;evOffset+=PAGE;evSel=-1;$('viewer').hidden=true;stopPlay();loadUploads();};
+
+function selectEvent(i){
+  stopPlay();
+  evSel=i;imgIdx=0;
+  document.querySelectorAll('#events tr').forEach((tr,n)=>tr.className=n===i?'sel':'');
+  $('viewer').hidden=false;
+  showImage();
+}
+function showImage(){
+  const e=EV[evSel];if(!e)return;
+  const name=e.files[imgIdx];
+  const url='/uploads/'+encodeURIComponent(name);
+  $('shotimg').src=url;
+  $('imglink').href=url;
+  $('imgpos').textContent=(imgIdx+1)+' / '+e.files.length+'  '+name;
+  $('imgprev').disabled=imgIdx===0;
+  $('imgnext').disabled=imgIdx>=e.files.length-1;
+}
+function step(d){
+  const e=EV[evSel];if(!e)return;
+  imgIdx=(imgIdx+d+e.files.length)%e.files.length;
+  showImage();
+}
+$('imgprev').onclick=()=>{stopPlay();step(-1);};
+$('imgnext').onclick=()=>{stopPlay();step(1);};
+function stopPlay(){if(play){clearInterval(play);play=null;$('imgplay').textContent='Play';}}
+$('imgplay').onclick=()=>{
+  if(play){stopPlay();return;}
+  if(evSel<0)return;
+  $('imgplay').textContent='Stop';
+  play=setInterval(()=>step(1),700);   // loops; prev/next or leaving the section stops it
+};
 
 /* ---------------------------------------------------------------- generic parameters */
 const READONLY=/^root\.(Properties|Brand)\./;
@@ -912,8 +1000,8 @@ async function load(){
 }
 buildNav();
 load().then(()=>go(location.hash.slice(1)||'live'));
-// only refresh the newest page, so a list being paged through does not shift underneath
-setInterval(()=>{if(cur==='upload'&&upOffset===0)loadUploads();},5000);
+// only refresh the newest page, and never while paging or playing back
+setInterval(()=>{if(cur==='upload'&&evOffset===0&&!play&&evSel<0)loadUploads();},5000);
 </script>
 """
 
