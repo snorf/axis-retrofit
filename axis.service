@@ -1,6 +1,6 @@
 [Unit]
 Description=Local web GUI and motion upload receiver for old AXIS cameras
-Documentation=https://github.com/OWNER/REPO
+Documentation=https://github.com/snorf/axis-retrofit
 After=network-online.target
 Wants=network-online.target
 
