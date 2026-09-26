@@ -67,7 +67,7 @@ SECTIONS = [
     ("audio", "Audio", ["Audio", "AudioSource"]),
     ("notify", "Notifications", ["Notify", "SMTP", "MailLogd"]),
     ("layout", "Live View", ["Layout"]),
-    ("events", "Events (raw)", ["Event", "EventServers", "Motion"]),
+    ("events", "Event parameters", ["Event", "EventServers", "Motion"]),
     ("system", "System", ["System", "Log", "StatusLED", "Input", "Output",
                           "Brand", "Properties"]),
 ]
@@ -583,8 +583,9 @@ HTML = r"""<!doctype html>
  .grip{position:absolute;right:0;bottom:0;width:12px;height:12px;background:#fff;opacity:.7;cursor:nwse-resize}
  fieldset{border:1px solid #ccc;border-radius:4px;min-width:300px;background:#fff}
  label{display:block;margin:5px 0}
+ label[hidden]{display:none}
  label span{display:inline-block;width:190px;vertical-align:top}
- #sec-upload label span,#panel label span{width:130px}
+ #sec-capture label span,#panel label span{width:130px}
  input[type=range]{width:130px;vertical-align:middle}
  output{display:inline-block;width:2em;text-align:right}
  #bar{position:relative;height:14px;background:#ddd;margin:6px 0;width:640px}
@@ -637,10 +638,11 @@ HTML = r"""<!doctype html>
  </div>
 </section>
 
-<section id="sec-upload" hidden>
- <h2>HTTP upload on motion</h2>
+<section id="sec-capture" hidden>
+ <h2>Capture on motion</h2>
  <fieldset>
-  <label><span>URL</span><input autocomplete="off" id="url" size="40" value="__UPLOAD_URL__"></label>
+  <label><span>Upload to</span><select autocomplete="off" id="dest"><option value="self">This server</option><option value="other">Another server</option></select></label>
+  <label id="urlrow" hidden><span>URL</span><input autocomplete="off" id="url" size="40"></label>
   <label><span>Format</span><select autocomplete="off" id="fileformat"><option value="jpg">JPEG images</option><option value="mp4">MP4 clips</option></select></label>
   <label><span>Pre-trigger</span><input autocomplete="off" id="pre" type="number" min="0" max="30"> <small>seconds, one image per second</small></label>
   <label><span>Post-trigger</span><input autocomplete="off" id="post" type="number" min="0" max="30"> <small>seconds, one image per second</small></label>
@@ -649,7 +651,10 @@ HTML = r"""<!doctype html>
   <div id="target"></div>
   <button id="test">Test connection</button><button id="savet">Save</button><button id="trig">Trigger event now</button>
  </fieldset>
- <h2 style="margin-top:18px">Events</h2>
+</section>
+
+<section id="sec-recordings" hidden>
+ <h2>Recordings</h2>
  <div class="row">
   <div>
    <table id="events" class="pick"></table>
@@ -690,6 +695,13 @@ HTML = r"""<!doctype html>
 </div>
 <script>
 const SECTIONS=__SECTIONS__;
+const SELF_URL='__UPLOAD_URL__';
+// Menu groups, separated by a rule. Fixed entries and the generated parameter sections
+// mix freely: SECTIONS entries are [id,label,groups] and the extra element is ignored.
+const NAV=[[['live','Live'],['motion','Motion'],['recordings','Recordings']],
+           [['capture','Capture'],...SECTIONS],
+           [['maint','Maintenance']]];
+const IDS=new Set(NAV.flat().map(x=>x[0]));
 const W=640,H=480,S=9999;  // camera coords 0..9999, origin top-left, y down
 const px=(v,d)=>Math.round(v/S*d), un=(p,d)=>Math.max(0,Math.min(S,Math.round(p/d*S)));
 const $=id=>document.getElementById(id);
@@ -712,13 +724,12 @@ async function api(method,url,body){
 /* ---------------------------------------------------------------- navigation */
 function buildNav(){
   const n=$('nav');
-  const add=(id,label)=>{const a=document.createElement('a');a.dataset.id=id;a.textContent=label;
-    a.onclick=()=>go(id);n.appendChild(a);return a;};
-  add('live','Live');add('motion','Motion');add('upload','Upload');
-  n.appendChild(document.createElement('hr'));
-  for(const [id,label] of SECTIONS)add(id,label);
-  n.appendChild(document.createElement('hr'));
-  add('maint','Maintenance');
+  NAV.forEach((group,i)=>{
+    if(i)n.appendChild(document.createElement('hr'));
+    for(const [id,label] of group){
+      const a=document.createElement('a');a.dataset.id=id;a.textContent=label;
+      a.onclick=()=>go(id);n.appendChild(a);}
+  });
 }
 function videoOn(el){el.src='/video.mjpg?'+Date.now();}
 function videoOff(el){el.removeAttribute('src');}
@@ -732,7 +743,8 @@ function go(id){
   document.querySelectorAll('main > section').forEach(s=>s.hidden=true);
   if(id==='live'){$('sec-live').hidden=false;videoOn($('livevid'));}
   else if(id==='motion'){$('sec-motion').hidden=false;snapTried=false;videoOn($('camimg'));if(sel)live(sel);}
-  else if(id==='upload'){$('sec-upload').hidden=false;loadUploads();}
+  else if(id==='recordings'){$('sec-recordings').hidden=false;loadUploads();}
+  else if(id==='capture'){$('sec-capture').hidden=false;}
   else if(id==='maint'){$('sec-maint').hidden=false;}
   else{$('sec-params').hidden=false;renderParams(id);}
 }
@@ -812,10 +824,18 @@ $('del').onclick=async()=>{
 $('reload').onclick=load;
 
 /* ---------------------------------------------------------------- upload target */
+function destChanged(){$('urlrow').hidden=$('dest').value==='self';}
+$('dest').onchange=destChanged;
+const uploadUrl=()=>$('dest').value==='self'?SELF_URL:$('url').value.trim();
 function fillTarget(){
   const e=st.event,srv=Object.keys(st.servers)[0];
   const act=Object.entries(st.actions).find(([a,v])=>v.Type==='U'&&v.Protocol==='HTTP');
-  if(srv)$('url').value=st.servers[srv].Address;
+  // The camera decides the mode: our own address means "This server", anything else is
+  // someone else's. With no server configured yet, offer ours.
+  const addr=srv?st.servers[srv].Address:SELF_URL;
+  $('dest').value=addr===SELF_URL?'self':'other';
+  $('url').value=addr;
+  destChanged();
   $('fileformat').value=e.FileFormat==='mp4'?'mp4':'jpg';
   $('pre').value=e.IncludePreTrigger==='yes'?e.PreTriggerSize:0;
   $('post').value=e.IncludePostTrigger==='yes'?e.PostTriggerSize:0;
@@ -825,14 +845,14 @@ function fillTarget(){
     ?'Camera: upload action '+act[0]+' -> server '+act[1].Server+(srv?' ('+st.servers[srv].Address+')':'')+', format '+e.FileFormat+', event '+(e.Enabled==='yes'?'enabled':'disabled')+', trigger '+e.SWInput
     :'The camera has no HTTP upload action yet. Save to create the server and action.';
 }
-const target=()=>({url:$('url').value,fileformat:$('fileformat').value,pre:+$('pre').value,post:+$('post').value,min_interval:+$('min_interval').value,enabled:$('enabled').checked});
+const target=()=>({url:uploadUrl(),fileformat:$('fileformat').value,pre:+$('pre').value,post:+$('post').value,min_interval:+$('min_interval').value,enabled:$('enabled').checked});
 $('savet').onclick=async()=>{
   // Changing the format is easy to do by accident and quietly changes what arrives.
   const now=st.event.FileFormat==='mp4'?'mp4':'jpg', want=$('fileformat').value;
   if(now!==want&&!confirm('Change the upload format from '+now+' to '+want+'?\n\n'
       +'jpg uploads a burst of still images per event, mp4 uploads one video clip.'))return;
   const s=await api('PUT','/api/upload-target',target());if(s)render(s);};
-$('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:$('url').value});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
+$('test').onclick=async()=>{const j=await api('POST','/api/upload-target/test',{url:uploadUrl()});if(j)status((j.ok?'Test OK: ':'Test failed: ')+j.text,!j.ok);};
 $('trig').onclick=async()=>{const j=await api('POST','/api/trigger');if(j)status('Event triggered. Images appear in the list within a few seconds.');};
 const PAGE=15;
 let evOffset=0, evTotal=0, evShown=0, EV=[], evSel=-1, imgIdx=0, play=null, evSig='';
@@ -1004,9 +1024,9 @@ async function load(){
         if(cur==='motion'&&sel&&(!es||es.readyState===2))live(sel);}
 }
 buildNav();
-load().then(()=>go(location.hash.slice(1)||'live'));
+load().then(()=>{const h=location.hash.slice(1);go(IDS.has(h)?h:'live');});
 // only refresh the newest page, and never while paging or playing back
-setInterval(()=>{if(cur==='upload'&&evOffset===0&&!play&&evSel<0)loadUploads();},5000);
+setInterval(()=>{if(cur==='recordings'&&evOffset===0&&!play&&evSel<0)loadUploads();},5000);
 </script>
 """
 

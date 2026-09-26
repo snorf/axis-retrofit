@@ -15,9 +15,9 @@ endpoints directly instead, so everything works in a normal browser again.
   live image, with sliders for object size, history and sensitivity, and a live activity
   bar showing the measured level against the trigger threshold.
 - **Motion upload.** Point the camera at this server and it posts JPEG images (or MP4
-  clips) on every motion event. Images are grouped back into events by capture time and
-  listed newest first, with a viewer beside the list for stepping through an event frame by
-  frame or playing it back as a loop. The list is read straight from the upload directory,
+  clips) on every motion event. Under **Recordings**, images are grouped back into events
+  by capture time and listed newest first, with a viewer beside the list for stepping
+  through an event frame by frame or playing it back as a loop. The list is read straight from the upload directory,
   so it survives a restart and does not grow in memory.
 - **Every camera setting.** All parameters the camera exposes, grouped into sections in a
   left-hand menu, editable and saved back in a single request. The form is built from the
@@ -103,9 +103,10 @@ filesystem quickly. There is no retention policy yet: nothing deletes old images
 
 ### Setting up motion upload
 
-Open the **Upload** section. The URL field is pre-filled with the address the camera can
-reach this server on. Press **Test connection** to have the camera verify it can reach you,
-then **Save**. That creates the HTTP event server and the upload action on the camera, and
+Open the **Capture** section. Leave **Upload to** on **This server** and the address the
+camera can reach this server on is filled in for you; pick **Another server** to type a
+different one. Press **Test connection** to have the camera verify it can reach that
+address, then **Save**. That creates the HTTP event server and the upload action on the camera, and
 enables the event. **Trigger event now** fires a test event.
 
 Choose **JPEG images** unless you want video. With **MP4 clips** the camera uploads one
@@ -147,7 +148,7 @@ shows the task starting; nothing is produced and nothing is reported.
 **Event settings can need the event toggled off and on to take effect.** Writing an event
 parameter updates the configuration file, but the camera's task scheduler does not always
 reload it. When it does not, recording keeps running with the previous settings and no
-uploads arrive. Writing `root.Event.E0.Enabled` forces the reload, so saving from the Upload
+uploads arrive. Writing `root.Event.E0.Enabled` forces the reload, so saving from the Capture
 section is always safe; changing event parameters in the raw parameter editor is not, and
 should be followed by toggling the event off and on.
 
