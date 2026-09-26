@@ -202,25 +202,43 @@ class UploadServer(socketserver.ThreadingTCPServer):
 
 
 EVENT_GAP = 8  # seconds between two captures that starts a new event
+# The camera boots at the Unix epoch and only reaches NTP once an hour, so a power cut is
+# followed by an hour of pictures stamped 1970. Wide enough to allow any time zone between
+# the camera's local time and this host's, narrow enough to catch a clock that never synced.
+MAX_CLOCK_SKEW = datetime.timedelta(days=1)
 
 
-def capture_time(name):
-    """When the camera took the picture, from its own stamp in the filename, falling back
-    to when we received it."""
-    m = re.search(r"(\d\d)-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)", name)
-    if m:
-        y, mo, d, H, M, S = (int(g) for g in m.groups())
-        try:
-            return datetime.datetime(2000 + y, mo, d, H, M, S)
-        except ValueError:
-            pass
+def received_time(name):
+    """When we wrote the file, from the prefix save_upload() puts on it. Always our own
+    clock, so it is the trustworthy half of the name."""
     m = re.match(r"(\d{8})-(\d{6})", name)
     if m:
         try:
             return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
         except ValueError:
             pass
-    return datetime.datetime.min
+    return None
+
+
+def capture_time(name):
+    """When the camera took the picture, from its own stamp in the filename, falling back
+    to when we received it.
+
+    The camera's stamp is the better answer when its clock is set, because it is when the
+    shutter fired rather than when the upload landed. It is worthless after a power cut, and
+    a 1970 stamp read as 2070 sorts the whole event into the future, ahead of everything
+    real. So trust it only while it agrees with our own receive time."""
+    received = received_time(name)
+    m = re.search(r"(\d\d)-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)", name)
+    if m:
+        y, mo, d, H, M, S = (int(g) for g in m.groups())
+        try:
+            shot = datetime.datetime(2000 + y, mo, d, H, M, S)
+            if received is None or abs(shot - received) <= MAX_CLOCK_SKEW:
+                return shot
+        except ValueError:
+            pass
+    return received or datetime.datetime.min
 
 
 def uploaded_events():
