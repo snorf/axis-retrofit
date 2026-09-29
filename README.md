@@ -156,6 +156,16 @@ should be followed by toggling the event off and on.
 `Content-Type: image/jpeg` and the filename in `Content-Disposition`. A receiver that only
 looks for multipart form files will silently store nothing.
 
+**The camera's clock is wrong for an hour after every power cut.** It boots at the Unix
+epoch and polls NTP only once an hour, so everything captured in between carries a
+`70-01-01` stamp in its filename. Read as a two-digit year that becomes 2070, which sorts
+the whole event into the future and parks it at the top of the recording list ahead of
+everything real. The receive time this program prefixes to each filename comes from the
+host's own clock and is always right, so `capture_time()` prefers the camera's stamp but
+only while the two agree to within a day: wide enough for the camera running local time
+against a UTC host, narrow enough to catch a clock that never synced. On a camera that
+loses power often, shorten `root.Time.NTP.Update` from its default of one hour.
+
 **MP4 clips use MPEG-4 Part 2, which modern players refuse.** The camera writes a valid
 file with both tracks, video as `mp4v` and audio as AAC, but QuickTime, Preview and Safari
 dropped MPEG-4 Part 2 support, so they play the audio and show nothing. The video is fine:
