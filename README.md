@@ -25,6 +25,10 @@ endpoints directly instead, so everything works in a normal browser again.
   values that camera accepts, numbers carry their real minimum and maximum, and every field
   is labelled with the camera's own name for it. Nothing about the parameter set is
   hardcoded, so it adapts to whatever model it is pointed at.
+- **Push notifications.** One notification per motion event, not per image, sent to an
+  [ntfy](https://ntfy.sh) topic with an animated GIF of the event attached so it can be
+  judged from the phone without being on the home network. A cooldown keeps a busy camera
+  from emptying the battery. Off unless `NTFY_URL` is set.
 - **Maintenance.** System log, server report, configuration backup, restart, factory reset.
 - **Test trigger.** Fire a motion event from the GUI using the camera's virtual web-button
   input, so you can test the whole chain without walking to the camera. It holds the input
@@ -112,6 +116,27 @@ enables the event. **Trigger event now** fires a test event.
 Choose **JPEG images** unless you want video. With **MP4 clips** the camera uploads one
 recording per event instead of a burst of stills, which is easy to select by accident and
 then looks like nothing is arriving if you are watching for images.
+
+### Notifications
+
+Set `NTFY_URL` to a topic URL and every motion event produces one push. The attachment is a
+320x240 GIF of the whole event, which lands around 350 kB for a typical thirteen-image event;
+events longer than twelve images use every other frame so a long one does not balloon. With
+Pillow missing, a single JPEG is sent instead — the largest file in the event, which is
+usually the frame with something in it, because a busier picture compresses worse.
+
+Tapping the notification opens the **Recordings** section. That link uses the same host the
+camera uploads to, on the web port; a reverse proxy in front of this would need its own
+setting.
+
+`NOTIFY_COOLDOWN` is the seconds of quiet after a notification before another is sent, 600 by
+default. A camera watching a busy spot can produce tens of events a day. Suppressed events
+are still recorded and still appear under Recordings — only the push is skipped, and the log
+says so.
+
+Pillow is an optional extra, imported only when a notification is built, so the two-dependency
+promise holds for anyone who does not want pictures in their notifications. On Debian it is
+`python3-pil`.
 
 ## Things worth knowing about this hardware
 

@@ -12,6 +12,7 @@
 #   macOS:  sudo sysctl -w net.inet.tcp.rfc1323=0
 #   Linux:  iptables -t mangle -A OUTPUT -d <camera-ip> -p tcp --syn -j TCPOPTSTRIP --strip-options timestamp
 import datetime
+import io
 import json
 import os
 import re
@@ -47,6 +48,13 @@ CREDS = os.environ.get("AXIS_CREDS", ".axis-creds")
 # Accepts "host" or "host:port".
 ADVERTISE = os.environ.get("ADVERTISE_HOST", "")
 TIMEOUT = (130, 30)  # connect: Linux retries SYN at 63 and 127 s, see the note above
+# Push notifications. An empty NTFY_URL turns the feature off entirely, so nobody has to
+# run a notification server to use the rest of this.
+NTFY_URL = os.environ.get("NTFY_URL", "")  # e.g. http://127.0.0.1:8080/axis-motion
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+# Measured traffic is around 29 events a day, which is a lot of pushes. One notification,
+# then quiet. Suppressed events are still recorded and still listed under Recordings.
+NOTIFY_COOLDOWN = int(os.environ.get("NOTIFY_COOLDOWN", "600"))  # seconds; 0 sends always
 
 if not HOST:
     sys.exit("AXIS_HOST is not set. Example: AXIS_HOST=192.0.2.10 python3 axis.py")
@@ -184,6 +192,7 @@ class UploadHandler(socketserver.StreamRequestHandler):
                 m = re.search(r'filename="([^"]+)"', headers.get("content-disposition", ""))
                 name = save_upload(ts, m.group(1) if m else "image.jpg", body)
                 print("upload from", self.client_address[0], len(body), "bytes:", name)
+                notify_after_event()
             self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n"
                              b"Connection: close\r\n\r\n")
             self.wfile.flush()
@@ -283,6 +292,152 @@ def uploaded_file(name):
     return send_from_directory(UPLOAD_DIR, os.path.basename(name))
 
 
+# --------------------------------------------------------------------------- our address
+
+def _advertise():
+    """"host:port" the camera can reach this server's upload listener on."""
+    where = ADVERTISE
+    if not where:  # the address the camera can reach us on; a UDP connect sends nothing
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((HOST, 80))
+            where = s.getsockname()[0]
+            s.close()
+        except OSError:
+            where = "127.0.0.1"
+    if ":" not in where:
+        where = f"{where}:{UPLOAD_PORT}"
+    return where
+
+
+def upload_url():
+    return f"http://{_advertise()}/upload"
+
+
+def ui_url():
+    """Where to send someone who taps a notification: the same host, but the web port.
+    A reverse proxy in front of this would need a setting of its own; ADVERTISE_HOST
+    describes the upload path, not this one."""
+    return f"http://{_advertise().split(':')[0]}:{PORT}/#recordings"
+
+
+# ------------------------------------------------------------------------- notifications
+
+_notify_timer = None
+_notify_lock = threading.Lock()
+_last_notify = 0.0
+
+
+def notify_after_event():
+    """Arm a one-shot timer, restarting it on every picture that arrives.
+
+    An event is over once nothing new has come in for EVENT_GAP seconds, which is the rule
+    uploaded_events() groups by. Waiting for that silence is what makes this one
+    notification per event instead of one per image, and it needs no second definition of
+    where an event ends."""
+    global _notify_timer
+    if not NTFY_URL:
+        return
+    with _notify_lock:
+        if _notify_timer:
+            _notify_timer.cancel()
+        _notify_timer = threading.Timer(EVENT_GAP + 1, send_notification)
+        _notify_timer.daemon = True
+        _notify_timer.start()
+
+
+def best_frame(paths):
+    """The picture least like the first one.
+
+    The first picture of an event is pre-trigger, taken before anything happened, so the
+    frame differing most from it holds whatever set the event off. Compared in greyscale at
+    64x48, which is plenty to find the one with a person in it. Without Pillow the largest
+    file is a fair stand-in: a busier frame compresses worse."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return max(paths, key=os.path.getsize)
+    try:
+        ref = list(Image.open(paths[0]).convert("L").resize((64, 48)).getdata())
+    except OSError:
+        return paths[0]
+    best, score = paths[0], -1
+    for q in paths[1:]:
+        try:
+            px = list(Image.open(q).convert("L").resize((64, 48)).getdata())
+        except OSError:
+            continue  # an upload still being written
+        d = sum(abs(a - b) for a, b in zip(ref, px))
+        if d > score:
+            best, score = q, d
+    return best
+
+
+def event_attachment(paths):
+    """(bytes, filename, content type) for the notification: a GIF of the whole event, or a
+    single frame when there is only one or Pillow is missing.
+
+    Pillow is imported here rather than at the top so it stays a soft dependency and the
+    promise of two dependencies holds. Sizes measured on a real 13-image event: 640x480 is
+    2686 kB, 320x240 is 692 kB, and every other frame at 320x240 is 372 kB."""
+    def single():
+        with open(best_frame(paths), "rb") as f:
+            return f.read(), "motion.jpg", "image/jpeg"
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return single()
+    frames = []
+    for q in paths:
+        try:
+            frames.append(Image.open(q).convert("RGB").resize((320, 240)))
+        except OSError:
+            pass  # an upload still being written
+    if len(frames) < 2:
+        return single()
+    frames = frames[::2] if len(frames) > 12 else frames
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
+                   duration=700, loop=0, optimize=True)
+    return buf.getvalue(), "motion.gif", "image/gif"
+
+
+def send_notification():
+    """Push one notification for the event that has just ended.
+
+    Guarded as a whole on purpose: losing pictures because the notifier broke would be a
+    worse failure than the one this feature exists to fix."""
+    global _last_notify
+    try:
+        events = uploaded_events()
+        if not events:
+            return
+        event = events[0]
+        if NOTIFY_COOLDOWN:
+            left = NOTIFY_COOLDOWN - (time.time() - _last_notify)
+            if left > 0:
+                print(f"notification suppressed, {int(left)} s of cooldown left")
+                return
+        paths = [os.path.join(UPLOAD_DIR, name) for _, name, _ in event]
+        blob, filename, ctype = event_attachment(paths)
+        seconds = int((event[-1][0] - event[0][0]).total_seconds())
+        headers = {"Title": f"Motion at {event[0][0]:%H:%M}",
+                   "Message": f"{len(event)} images over {seconds} s",
+                   "Tags": "camera", "Click": ui_url(),
+                   "Filename": filename, "Content-Type": ctype}
+        if NTFY_TOKEN:
+            headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+        r = requests.put(NTFY_URL, data=blob, headers=headers, timeout=30)
+        if r.status_code != 200:
+            print("ntfy returned HTTP", r.status_code, r.text.strip()[:200])
+            return  # leave _last_notify alone, so the next event tries again
+        _last_notify = time.time()
+        print(f"notified: {len(event)} images, {len(blob)} bytes as {filename}")
+    except Exception as e:  # deliberately broad; see the docstring
+        print("notification failed:", type(e).__name__, e)
+
+
 # ------------------------------------------------------------------------------- state
 
 def groups(p, prefix):
@@ -324,18 +479,7 @@ def cam_error(e):
 
 @app.get("/")
 def index():
-    where = ADVERTISE
-    if not where:  # the address the camera can reach us on; a UDP connect sends nothing
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((HOST, 80))
-            where = s.getsockname()[0]
-            s.close()
-        except OSError:
-            where = "127.0.0.1"
-    if ":" not in where:
-        where = f"{where}:{UPLOAD_PORT}"
-    return (HTML.replace("__UPLOAD_URL__", f"http://{where}/upload")
+    return (HTML.replace("__UPLOAD_URL__", upload_url())
                 .replace("__SECTIONS__", json.dumps(SECTIONS))
                 .replace("__CAMERA__", HOST))
 
