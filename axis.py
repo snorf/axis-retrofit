@@ -351,8 +351,13 @@ def best_frame(paths):
 
     The first picture of an event is pre-trigger, taken before anything happened, so the
     frame differing most from it holds whatever set the event off. Compared in greyscale at
-    64x48, which is plenty to find the one with a person in it. Without Pillow the largest
-    file is a fair stand-in: a busier frame compresses worse."""
+    64x48, which is plenty to find the one with a person in it.
+
+    Without Pillow, the largest file is the best guess available, on the theory that a
+    busier frame compresses worse. Measured over 59 real events it is the weakest link
+    here: it names the same frame 19% of the time and lands in the top three 44%, against
+    6% for picking at random. Better than nothing, and better than the middle frame at
+    17%, but do install Pillow if the picture matters."""
     try:
         from PIL import Image
     except ImportError:

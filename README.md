@@ -121,9 +121,13 @@ then looks like nothing is arriving if you are watching for images.
 
 Set `NTFY_URL` to a topic URL and every motion event produces one push. The attachment is a
 320x240 GIF of the whole event, which lands around 350 kB for a typical thirteen-image event;
-events longer than twelve images use every other frame so a long one does not balloon. With
-Pillow missing, a single JPEG is sent instead — the largest file in the event, which is
-usually the frame with something in it, because a busier picture compresses worse.
+events longer than twelve images use every other frame so a long one does not balloon.
+
+With Pillow missing, a single JPEG is sent instead: the largest file in the event, on the
+theory that a busier picture compresses worse. Measured over 59 real events that guess names
+the same frame as the real comparison 19% of the time and is in its top three 44%, against
+6% for chance — better than nothing, but the reason to install Pillow is that this part is
+genuinely weak without it.
 
 Tapping the notification opens the **Recordings** section. That link uses the same host the
 camera uploads to, on the web port; a reverse proxy in front of this would need its own
