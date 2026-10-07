@@ -55,6 +55,9 @@ NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
 # Measured traffic is around 29 events a day, which is a lot of pushes. One notification,
 # then quiet. Suppressed events are still recorded and still listed under Recordings.
 NOTIFY_COOLDOWN = int(os.environ.get("NOTIFY_COOLDOWN", "600"))  # seconds; 0 sends always
+# Retention. Nothing is ever deleted unless this is set, so upgrading to a newer version of
+# this file never starts throwing away somebody's recordings on its own.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))  # 0 keeps everything
 
 if not HOST:
     sys.exit("AXIS_HOST is not set. Example: AXIS_HOST=192.0.2.10 python3 axis.py")
@@ -268,6 +271,52 @@ def uploaded_events():
             events.append([f])
     events.reverse()
     return events
+
+
+_UPLOAD_NAME = re.compile(r"^\d{8}-\d{6}-\d{6}-")  # the prefix save_upload() writes
+
+
+def prune_uploads():
+    """Delete uploads older than RETENTION_DAYS.
+
+    Judged by capture_time(), so a picture ages out on the date the Recordings list shows it
+    under rather than on some other clock.
+
+    Deliberately narrow about what it will touch: regular files, sitting directly in
+    UPLOAD_DIR, whose names this program wrote itself. A subdirectory, a symlink, a file
+    somebody dropped in by hand: all left alone. This is the only code here that destroys
+    data, so it would rather miss something than take something it should not."""
+    if RETENTION_DAYS <= 0:
+        return
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=RETENTION_DAYS)
+    gone = freed = 0
+    for e in os.scandir(UPLOAD_DIR):
+        try:
+            if not e.is_file(follow_symlinks=False) or not _UPLOAD_NAME.match(e.name):
+                continue
+            if capture_time(e.name) >= cutoff:
+                continue
+            size = e.stat().st_size
+            os.remove(e.path)
+        except OSError as err:  # one awkward file must not stop the sweep
+            print("prune: cannot remove", e.name, err)
+            continue
+        gone += 1
+        freed += size
+    if gone:
+        print(f"pruned {gone} images older than {RETENTION_DAYS} days, "
+              f"{freed // 1024} kB freed")
+
+
+def prune_periodically():
+    """Sweep at startup, then daily. Daily is enough when the cutoff moves by the day, and
+    sweeping at startup makes a configuration change visible at once."""
+    while True:
+        try:
+            prune_uploads()
+        except Exception as err:  # never let this thread die and stop all future pruning
+            print("prune failed:", type(err).__name__, err)
+        time.sleep(24 * 3600)
 
 
 @app.get("/api/events")
@@ -1199,5 +1248,6 @@ setInterval(()=>{if(cur==='recordings'&&evOffset===0&&!play&&evSel<0)loadUploads
 
 upload_server = UploadServer(("0.0.0.0", UPLOAD_PORT), UploadHandler)
 threading.Thread(target=upload_server.serve_forever, daemon=True).start()
+threading.Thread(target=prune_periodically, daemon=True).start()
 print(f"upload receiver on :{UPLOAD_PORT}, web interface on :{PORT}")
 app.run(host="0.0.0.0", port=PORT, threaded=True)

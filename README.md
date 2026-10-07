@@ -100,10 +100,30 @@ run it in a container with a bridged or NAT network instead, publish the port an
 `ADVERTISE_HOST` to the host's LAN address, otherwise the upload URL offered in the interface
 will be an address the camera cannot reach.
 
-Put `UPLOAD_DIR` on its own volume rather than the root filesystem. Images are small, around
-19 KB each and six per event, so ordinary use is well under a megabyte a day. A camera that
-is triggering on sensor noise instead writes about 150 MB a day, which fills a small root
-filesystem quickly. There is no retention policy yet: nothing deletes old images.
+Put `UPLOAD_DIR` on its own volume rather than the root filesystem. Measured over a month on
+a camera watching a front door: images are 26–60 KB each and about thirteen per event, which
+came to roughly 15 MB and 400 images a day. A camera triggering on sensor noise instead writes
+about 150 MB a day, which fills a small root filesystem quickly.
+
+Set `RETENTION_DAYS` to have old images deleted; see below.
+
+### Retention
+
+`RETENTION_DAYS` deletes uploads older than that many days. It is **unset by default, which
+keeps everything** — upgrading this file should not start erasing an archive. A sweep runs at
+startup and then once a day.
+
+At the ~15 MB a day above, 90 days is around 1.4 GB and 30 days around 450 MB, so pick from
+how far back you want to be able to look rather than from the size. Keeping the directory to
+tens of thousands of files rather than hundreds also keeps the event list quick to build,
+since it is read from the directory on every request.
+
+A picture ages out on the date the **Recordings** list shows it under, so what you see is what
+gets deleted. Only files this program wrote itself are ever removed: anything else in the
+directory, including subdirectories and symlinks, is left alone.
+
+There is no size cap. If you want one — a noise-triggering camera can fill a volume well
+inside the retention window — that is a contribution worth having.
 
 ### Setting up motion upload
 
@@ -244,7 +264,8 @@ Deliberately left out, and good places to contribute:
 - Audio transmit and receive.
 - Multiple cameras. One instance talks to one camera, set by `AXIS_HOST`. Running several
   instances on different ports works today; a single instance with a camera picker does not.
-- Retention. Nothing deletes old uploads; the directory grows without limit.
+- A size cap on the upload directory. `RETENTION_DAYS` handles age, but nothing stops a
+  misconfigured camera filling the volume inside the retention window.
 - Translations. The interface is English only, with no i18n layer. One would be welcome if
   anyone actually needs it.
 
