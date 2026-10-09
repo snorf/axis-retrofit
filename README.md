@@ -107,6 +107,48 @@ about 150 MB a day, which fills a small root filesystem quickly.
 
 Set `RETENTION_DAYS` to have old images deleted; see below.
 
+### With Docker
+
+There is a `Dockerfile`. It installs Flask, Requests and Pillow, copies `axis.py` and nothing
+else, and runs as a non-root user.
+
+```sh
+docker build -t axis-retrofit .
+docker run -d --name axis --network host \
+  -e AXIS_HOST=192.0.2.10 \
+  -e RETENTION_DAYS=90 \
+  -v /etc/axis-creds:/run/secrets/axis-creds:ro \
+  -v axis-uploads:/srv/axis-uploads \
+  axis-retrofit
+```
+
+**Use host networking.** The address the camera is told to upload to is worked out from the
+route to the camera, so in a bridged container it comes out as the container's internal
+address — something like `172.17.0.2` — which the camera cannot reach. Nothing reports an
+error: the camera accepts the setting, the event runs, and no image ever arrives. If you must
+run bridged, publish both ports and set `ADVERTISE_HOST` to an address on the camera's network:
+
+```sh
+docker run -d --name axis \
+  -e AXIS_HOST=192.0.2.10 -e ADVERTISE_HOST=192.0.2.20:6002 \
+  -p 6001:6001 -p 6002:6002 \
+  -v /etc/axis-creds:/run/secrets/axis-creds:ro \
+  -v axis-uploads:/srv/axis-uploads \
+  axis-retrofit
+```
+
+Credentials are a mounted file rather than an environment variable, so they stay out of
+`docker inspect`. The default path inside the image is `/run/secrets/axis-creds`; the file is
+one line, `username:password`.
+
+Put the uploads on a named volume. `RETENTION_DAYS` matters more here than under systemd,
+because a volume nobody looks at is easier to let grow.
+
+The image has a `HEALTHCHECK`, and it queries `/api/camera-address` rather than anything that
+talks to the camera. A camera on this hardware can take 67 seconds to answer, or may have
+changed address; neither means the container is broken, and a healthcheck that confounded the
+two would restart a perfectly good process.
+
 ### Retention
 
 `RETENTION_DAYS` deletes uploads older than that many days. It is **unset by default, which

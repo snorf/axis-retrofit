@@ -1,0 +1,7 @@
+# Exclude everything, then allow back only the file the image needs.
+#
+# Written this way round on purpose. A working copy of this repo contains .axis-creds, with
+# real camera credentials in it, and an image is a thing people push to registries. Denying
+# by default means a later, looser COPY cannot leak it by accident.
+*
+!axis.py
