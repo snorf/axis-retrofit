@@ -205,6 +205,16 @@ should be followed by toggling the event off and on.
 `Content-Type: image/jpeg` and the filename in `Content-Disposition`. A receiver that only
 looks for multipart form files will silently store nothing.
 
+**A camera that changes address fails silently in half.** Uploads and notifications keep
+working, because the camera pushes to this server, while live video, the parameter editor,
+Capture and the test trigger all break, because those talk to the camera. Nothing in the half
+that still works hints at the half that does not, and on DHCP without a reservation this
+happens: twice here it went unnoticed for days. So every upload's source address is compared
+against `AXIS_HOST`, a warning naming both is logged once per new address, and the interface
+shows a banner. The address is only ever reported, never used: anything on the network can
+post to the upload port, so treating the sender as the camera would let one JPEG redirect the
+credentials. Check the address before acting on the warning.
+
 **The camera's clock is wrong for an hour after every power cut.** It boots at the Unix
 epoch and polls NTP only once an hour, so everything captured in between carries a
 `70-01-01` stamp in its filename. Read as a two-digit year that becomes 2070, which sorts

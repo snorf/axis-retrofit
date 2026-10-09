@@ -158,6 +158,33 @@ def save_upload(ts, filename, data):
     return name
 
 
+# The address uploads actually arrive from. Reported, never trusted: see the warning text
+# and note_camera_address() below.
+_camera_seen = None
+_camera_warned = None
+
+
+def note_camera_address(ip):
+    """Remember where uploads come from, and say so once when it is not where we are looking.
+
+    The camera reveals its address on every upload. When that stops matching AXIS_HOST,
+    everything that talks *to* the camera breaks — live video, the parameter editor, Capture,
+    the test trigger — while uploads and notifications carry on arriving, because the camera
+    pushes to us. That asymmetry hid a moved camera for six days once and three days again.
+
+    This is only ever reported, never acted on. Anything on the network can post to the upload
+    port, so treating the source address as the camera's would mean a single JPEG could
+    redirect the credentials in AXIS_CREDS to whoever sent it. Hence the warning tells the
+    reader to check the address rather than to apply it."""
+    global _camera_seen, _camera_warned
+    _camera_seen = ip
+    if ip != HOST and _camera_warned != ip:
+        _camera_warned = ip
+        print(f"WARNING: uploads are arriving from {ip}, but AXIS_HOST is {HOST}. Live video "
+              f"and every setting will fail until that is corrected. Check that {ip} really "
+              f"is the camera before pointing AXIS_HOST at it.")
+
+
 class UploadHandler(socketserver.StreamRequestHandler):
     """Receives the images the camera posts.
 
@@ -195,6 +222,7 @@ class UploadHandler(socketserver.StreamRequestHandler):
                 m = re.search(r'filename="([^"]+)"', headers.get("content-disposition", ""))
                 name = save_upload(ts, m.group(1) if m else "image.jpg", body)
                 print("upload from", self.client_address[0], len(body), "bytes:", name)
+                note_camera_address(self.client_address[0])
                 notify_after_event()
             self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n"
                              b"Connection: close\r\n\r\n")
@@ -538,6 +566,14 @@ def index():
                 .replace("__CAMERA__", HOST))
 
 
+@app.get("/api/camera-address")
+def camera_address():
+    """Deliberately does not touch the camera: this has to answer precisely when the camera
+    is unreachable, which is when a mismatch matters most. Going through state() would mean
+    returning 504 exactly then."""
+    return jsonify(configured=HOST, seen=_camera_seen)
+
+
 @app.get("/api/state")
 def api_state():
     return jsonify(state())
@@ -780,6 +816,7 @@ HTML = r"""<!doctype html>
 <style>
  body{font:14px system-ui,sans-serif;margin:0;color:#222;background:#fafafa}
  #status{padding:8px 14px;background:#eef;min-height:1.2em;border-bottom:1px solid #dde}
+ #moved{padding:8px 14px;background:#fdd;border-bottom:1px solid #daa;font-weight:600}
  #status.err{background:#fdd}
  #wrap{display:flex;align-items:flex-start}
  nav{width:170px;flex:none;padding:12px 0;border-right:1px solid #ddd;min-height:90vh;background:#fff}
@@ -822,6 +859,7 @@ HTML = r"""<!doctype html>
  label.risk::after{content:" ⚠";color:#a30}
  pre{background:#fff;border:1px solid #ddd;padding:10px;max-height:60vh;overflow:auto;white-space:pre-wrap}
 </style>
+<div id="moved" hidden></div>
 <div id="status">Loading…</div>
 <div id="wrap">
 <nav id="nav"></nav>
@@ -1234,12 +1272,25 @@ $('mfact').onclick=async()=>{
 };
 
 /* ---------------------------------------------------------------- startup */
+async function checkCameraAddress(){
+  // Separate from load() on purpose: this must still work when the camera is unreachable,
+  // which is exactly when a moved camera needs saying out loud.
+  try{
+    const j=await (await fetch('/api/camera-address')).json();
+    if(!j.seen||j.seen===j.configured)return;
+    $('moved').textContent='Uploads are arriving from '+j.seen+', but this server is '
+      +'configured to talk to '+j.configured+'. Live video and every setting will fail '
+      +'until AXIS_HOST is corrected. Check that '+j.seen+' really is the camera first.';
+    $('moved').hidden=false;
+  }catch(e){}   // a missing warning must never be what breaks the page
+}
 async function load(){
   const s=await api('GET','/api/state');
   if(s){render(s);if(cur&&SECTIONS.some(x=>x[0]===cur))renderParams(cur);
         if(cur==='motion'&&sel&&(!es||es.readyState===2))live(sel);}
 }
 buildNav();
+checkCameraAddress();
 load().then(()=>{const h=location.hash.slice(1);go(IDS.has(h)?h:'live');});
 // only refresh the newest page, and never while paging or playing back
 setInterval(()=>{if(cur==='recordings'&&evOffset===0&&!play&&evSel<0)loadUploads();},5000);
